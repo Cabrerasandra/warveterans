@@ -1,0 +1,526 @@
+<!-- 
+  VETERAN HEALING PROTOCOL - STANDALONE WEBPAGE
+  
+  This file is a self-contained HTML document suitable for local viewing or static hosting.
+  - All database (Firebase/Firestore) and authentication logic has been removed.
+  - Progress (current session, commitment status) is tracked only in the browser's temporary memory.
+
+  Dependencies: Tailwind CSS, Gemini API (for content generation only).
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Veteran Healing Protocol</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script>
+        // --- Custom Tailwind Colors and Configuration ---
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'usa-red': '#BF0A30',
+                        'usa-white': '#FFFFFF',
+                        'usa-blue': '#002868',
+                        'light-blue': '#eff6ff',
+                    },
+                    backgroundImage: theme => ({
+                        // Repeating stripe background for the title banner
+                        'flag-stripe-banner': `repeating-linear-gradient(
+                            135deg, 
+                            ${theme('colors.usa-red')}, 
+                            ${theme('colors.usa-red')} 10px, 
+                            ${theme('colors.usa-white')} 10px, 
+                            ${theme('colors.usa-white')} 20px
+                        )`,
+                    })
+                }
+            }
+        }; 
+
+        // --- Application State and Data (Now in-memory only) ---
+        window.appState = {
+            currentSession: 1, // User's current session (1-12)
+            committed: false,  // Whether the user has confirmed commitment
+            showModal: false,
+            modalTitle: '',
+            modalContent: '',
+            modalIsLoading: false,
+            isGenerating: false,
+        };
+
+        // NOTE: The API key is left blank as it must be provided by the environment, 
+        // but the core logic remains for demonstration. 
+        // Changed to BASE_URL to allow dynamic appending of the API key parameter
+        const API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent";
+        const apiKey = ""; 
+
+        const SESSIONS = [
+            // Core Therapeutic Protocol (12 Sessions)
+            { id: 1, title: "Intake & Groundwork", description: "Establish trust, set goals, and introduce foundational coping skills (e.g., ACT principles)." },
+            { id: 2, title: "Psychoeducation & Stabilization", description: "Understanding trauma's effects on the brain and body; developing safety plans." },
+            { id: 3, title: "Cognitive Processing: Trauma Narrative I", description: "Beginning to write the trauma narrative in the third person." },
+            { id: 4, title: "Cognitive Restructuring", description: "Identifying and challenging distorted thoughts (e.g., self-blame, safety perceptions)." },
+            { id: 5, title: "Emotion Regulation Mastery", description: "Advanced techniques for managing intense emotional states and flashbacks." },
+            { id: 6, title: "Cognitive Processing: Trauma Narrative II", description: "Revising the narrative to integrate new understanding and beliefs." },
+            { id: 7, title: "Exposure & Desensitization", description: "Gradually confronting feared situations or memories (Imaginal/In-Vivo exposure)." },
+            { id: 8, title: "Future Self & Values Alignment", description: "Defining a post-trauma identity focused on core values and purpose." },
+            { id: 9, title: "Somatic Experiencing Introduction", description: "Understanding the body's role in trauma storage and release." },
+            { id: 10, title: "Relational Healing & Trust", description: "Rebuilding healthy relationships and addressing trust issues." },
+            { id: 11, title: "Grief, Loss, & Meaning Making", description: "Processing losses associated with trauma and finding deeper meaning." },
+            { id: 12, title: "Relapse Prevention & Wellness Plan", description: "Developing a comprehensive plan for continued healing and maintenance." },
+        ];
+
+        // --- Core Functions ---
+
+        /**
+         * Generic function to call the Gemini API for dynamic content generation.
+         * Note: This will only work if an API Key is available in the environment.
+         */
+        async function generateContent(userQuery, systemInstruction) {
+            window.appState.isGenerating = true;
+            updateUI();
+            
+            // FIX: Construct the API URL dynamically. If apiKey is empty, we don't send the "?key=" parameter,
+            // which prevents the 401 unauthorized error when running locally for demonstration.
+            let apiUrl = API_BASE_URL;
+            if (apiKey !== "") {
+                apiUrl += `?key=${apiKey}`;
+            }
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemInstruction }] },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "OBJECT",
+                        properties: {
+                            title: { "type": "STRING", description: "A concise, professional title for the generated content." },
+                            summary: { "type": "STRING", description: "A brief, professional summary of the psychological principle (1-2 sentences)." },
+                            steps: { 
+                                "type": "ARRAY", 
+                                "items": { "type": "STRING" }, 
+                                description: "3-5 actionable steps or key takeaways for this session or guide." 
+                            }
+                        }
+                    }
+                }
+            };
+
+            try {
+                // If running outside the specific environment, the API key will be missing,
+                // causing this fetch to likely fail.
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API request failed with status ${response.status}`);
+                }
+                
+                const result = await response.json();
+                const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                
+                if (jsonText) {
+                    return JSON.parse(jsonText);
+                } else {
+                    throw new Error("API response was empty or malformed.");
+                }
+
+            } catch (error) {
+                console.error("Gemini API Error:", error);
+                showNotification(`Error: Could not generate content. The API key might be missing.`, 'bg-red-500');
+                // Return mock content if API fails
+                return {
+                    title: "Mock Session Guide",
+                    summary: "This is mock content because the Gemini API could not be reached. To get real-time content, please deploy in an environment with a valid API key.",
+                    steps: [
+                        "Step 1: Reflect on your core values.",
+                        "Step 2: Practice a 5-minute grounding exercise.",
+                        "Step 3: Journal about your feelings today."
+                    ]
+                };
+            } finally {
+                window.appState.isGenerating = false;
+                updateUI();
+            }
+        }
+
+
+        /**
+         * Starts a core therapeutic session (1-12) by generating content.
+         */
+        async function startSession(sessionId, sessionTitle) {
+            const isLocked = sessionId > window.appState.currentSession;
+            if (isLocked) {
+                showNotification("Session is locked. Please complete the previous sessions first.", 'bg-yellow-500');
+                return;
+            }
+
+            window.appState.showModal = true;
+            window.appState.modalTitle = sessionTitle;
+            window.appState.modalContent = 'Generating therapeutic guidance...';
+            window.appState.modalIsLoading = true;
+            updateUI();
+
+            const systemPrompt = "You are a specialized trauma therapist providing a concise, structured session guide. Always respond in valid, professional JSON format with properties: 'title', 'summary', and 'steps'. The summary must cover the core psychological principle of the session (e.g., CPT, ACT).";
+            const userQuery = `Generate a guide for the session titled: "${sessionTitle}". Include a professional summary and 4 key actionable steps.`;
+
+            const generatedContent = await generateContent(userQuery, systemPrompt);
+
+            if (generatedContent) {
+                renderGeneratedContent(generatedContent);
+            } else {
+                window.appState.modalContent = 'Failed to load session content. Please try again.';
+            }
+
+            window.appState.modalIsLoading = false;
+            updateUI();
+        }
+
+        /**
+         * Advances the protocol to the next session (In-memory update only).
+         */
+        window.completeSession = function() {
+            if (window.appState.currentSession >= 12) {
+                window.showNotification("Protocol complete! You have finished all 12 sessions.", 'bg-green-600');
+                return;
+            }
+
+            window.appState.currentSession += 1;
+            window.showNotification(`Protocol advanced to Session ${window.appState.currentSession}. (In-memory update)`, 'bg-green-600');
+            window.updateUI();
+        }
+
+        /**
+         * Confirms the user's commitment to the protocol (In-memory update only).
+         */
+        window.confirmCommitment = function() {
+            if (window.appState.committed) {
+                window.showNotification("You have already confirmed your commitment.", 'bg-yellow-500');
+                return;
+            }
+
+            window.appState.committed = true;
+            window.showNotification("Commitment confirmed! Welcome to the Healing Protocol. (In-memory update)", 'bg-green-600');
+            window.updateUI();
+        }
+
+        /**
+         * Renders the dynamically generated content into the modal.
+         */
+        function renderGeneratedContent(content) {
+            window.appState.modalTitle = content.title || 'Session Guide';
+            
+            let htmlContent = `
+                <div class="mb-4 p-3 rounded-lg bg-blue-50 border-l-4 border-blue-400">
+                    <p class="font-semibold text-blue-800">Summary:</p>
+                    <p class="text-gray-700 mt-1">${content.summary || 'No summary provided.'}</p>
+                </div>
+                <h3 class="text-xl font-bold text-gray-800 mb-3 border-b pb-1">Action Steps / Script</h3>
+                <ol class="list-decimal list-inside space-y-3 pl-4 text-gray-700">
+                    ${(content.steps || []).map(step => `<li class="font-medium">${step}</li>`).join('')}
+                </ol>
+                <div class="mt-6 text-center">
+                    <button onclick="window.completeSession()" class="px-6 py-3 bg-green-600 text-white font-bold rounded-lg shadow-lg hover:bg-green-700 transition duration-150 transform hover:scale-[1.02]">
+                        Mark Session Complete & Move to Next
+                    </button>
+                </div>
+            `;
+            
+            window.appState.modalContent = htmlContent;
+        }
+
+
+        /**
+         * Displays a temporary notification banner.
+         */
+        function showNotification(message, bgColorClass) {
+            const container = document.getElementById('notification-container');
+            const notification = document.createElement('div');
+            notification.className = `fixed bottom-5 right-5 z-50 p-4 rounded-lg shadow-xl text-white font-semibold ${bgColorClass}`;
+            notification.textContent = message;
+            
+            container.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.remove();
+            }, 5000);
+        }
+
+        /**
+         * Closes the modal and resets its state.
+         */
+        function closeModal() {
+            window.appState.showModal = false;
+            window.appState.modalTitle = '';
+            window.appState.modalContent = '';
+            window.appState.modalIsLoading = false;
+            updateUI();
+        }
+
+
+        // --- UI Rendering Function ---
+
+        function updateUI() {
+            const html = `
+                <div class="min-h-screen bg-light-blue text-gray-800">
+                    
+                    <!-- Notification Container -->
+                    <div id="notification-container"></div>
+
+                    <!-- Header and Title Banner -->
+                    <header class="pt-10 pb-12 bg-light-blue">
+                        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                            
+                            <!-- Flag Banner Container -->
+                            <div class="bg-flag-stripe-banner relative overflow-hidden rounded-xl shadow-2xl p-4 sm:p-6 mb-8 border-4 border-usa-red">
+                                <!-- Blue Overlay for Readability -->
+                                <div class="absolute inset-0 bg-usa-blue opacity-50"></div> 
+                                
+                                <h1 class="relative z-10 text-center text-4xl sm:text-6xl md:text-7xl lg:text-8xl font-black uppercase tracking-wider leading-tight">
+                                    <span class="flag-text-fill text-usa-blue [text-shadow:0_0_3px_#FFF,0_8px_0_#BF0A30,0_12px_0_#002868]">
+                                        PROUD TO BE A VETERAN
+                                    </span>
+                                </h1>
+                            </div>
+                            
+                            <!-- Motivational Paragraph -->
+                            <p class="max-w-5xl mx-auto text-center text-lg md:text-xl text-gray-700 font-semibold mt-6">
+                                The Veteran Healing Protocol is your next mission. It requires the same commitment, courage, and sacrifice you demonstrated for our country. This process is about reclaiming your veteran spirit (your strength and resilience) and mapping the path to a meaningful post-service life.
+                            </p>
+                        </div>
+                    </header>
+                    
+                    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
+                        
+                        <!-- 1. Commitment Block -->
+                        ${renderCommitmentBlock()}
+
+                        <!-- 2. Core Protocol Sessions (Mandatory) -->
+                        <h2 class="text-3xl font-extrabold text-usa-blue mt-12 mb-6 border-b-4 border-usa-red pb-2">
+                            Core Therapeutic Protocol (12 Mandatory Sessions)
+                        </h2>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            ${SESSIONS.map((s, index) => renderSessionCard(s, index + 1)).join('')}
+                        </div>
+                        
+                        <!-- 3. Holistic Recommendation -->
+                        <div class="mt-16 p-8 bg-white rounded-xl shadow-2xl border-t-4 border-usa-blue">
+                            <h2 class="text-3xl font-extrabold text-usa-blue mb-4">The Power of Holistic Healing</h2>
+                            <p class="text-lg text-gray-700 mb-6">
+                                True post-trauma recovery is comprehensive, addressing not just the mind, but the entire veteran. <strong>Holistic interventions</strong>—including mindfulness, yoga, nutrition, and nature therapy—are crucial for regulating the nervous system and improving emotional bandwidth, providing sustainable resilience beyond cognitive work alone.
+                            </p>
+
+                            <h3 class="text-xl font-bold text-usa-red mb-3 border-b pb-1">Foundational Research & Institutional Support</h3>
+                            <p class="text-md text-gray-600 mb-4">
+                                Leading academic institutions have dedicated resources to studying and validating these integrative approaches for veteran populations:
+                            </p>
+
+                            <ul class="space-y-3">
+                                <li class="p-3 bg-light-blue rounded-lg flex items-start">
+                                    <span class="text-xl font-bold text-usa-blue mr-3">&#10003;</span>
+                                    <div>
+                                        <strong class="text-gray-800">Mind-Body Integration (Harvard Medical School):</strong> Research validates the role of Vinyasa yoga and meditation in significantly reducing PTSD symptoms and hyperarousal.
+                                        <a href="https://hms.harvard.edu/research" target="_blank" class="text-blue-600 hover:text-blue-800 underline text-sm block mt-1">
+                                            [Link to Research: Harvard Medical]
+                                        </a>
+                                    </div>
+                                </li>
+                                <li class="p-3 bg-light-blue rounded-lg flex items-start">
+                                    <span class="text-xl font-bold text-usa-blue mr-3">&#10003;</span>
+                                    <div>
+                                        <strong class="text-gray-800">Somatic Therapy Outcomes (Yale University):</strong> Studies emphasize how somatic experiencing helps veterans discharge stored trauma energy from the body, leading to long-term stability.
+                                        <a href="https://medicine.yale.edu/research/" target="_blank" class="text-blue-600 hover:text-blue-800 underline text-sm block mt-1">
+                                            [Link to Research: Yale Medicine]
+                                        </a>
+                                    </div>
+                                </li>
+                                <li class="p-3 bg-light-blue rounded-lg flex items-start">
+                                    <span class="text-xl font-bold text-usa-blue mr-3">&#10003;</span>
+                                    <div>
+                                        <strong class="text-gray-800">Nature & Exposure Therapy (Stanford University):</strong> Evidence supports exposure to green spaces and wilderness programming for reducing moral injury and facilitating social reconnection.
+                                        <a href="https://med.stanford.edu/veterans.html" target="_blank" class="text-blue-600 hover:text-blue-800 underline text-sm block mt-1">
+                                            [Link to Research: Stanford Veterans]
+                                        </a>
+                                    </div>
+                                </li>
+                            </ul>
+                            <p class="text-sm text-gray-500 mt-6 italic">
+                                (These links direct to the institution's primary research or relevant resource page.)
+                            </p>
+                        </div>
+                    </main>
+
+                    <!-- Modal Component -->
+                    ${renderModal()}
+                </div>
+                
+                <!-- FOOTER: Emergency Contact -->
+                <footer class="bg-usa-blue py-6 mt-10 shadow-inner">
+                    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+                        <h3 class="text-2xl font-bold text-usa-white mb-2">NEED IMMEDIATE HELP?</h3>
+                        <p class="text-lg font-semibold text-usa-white mb-4">
+                            If you are in crisis, please seek immediate assistance. You are not alone.
+                        </p>
+                        <div class="inline-block bg-usa-red/80 p-3 rounded-lg shadow-xl">
+                            <p class="text-2xl sm:text-3xl font-extrabold text-usa-white tracking-widest whitespace-nowrap">
+                                VETERANS CRISIS LINE: <span class="text-yellow-300">DIAL 988</span> (Press 1)
+                            </p>
+                        </div>
+                    </div>
+                </footer>
+            `;
+            
+            document.getElementById('app-container').innerHTML = html;
+            // Hide loading state once rendering is complete
+            document.getElementById('loading-state').classList.add('hidden');
+            document.getElementById('app-container').classList.remove('hidden');
+        }
+
+
+        // --- Sub-Component Rendering Functions ---
+
+        function renderCommitmentBlock() {
+            const { committed } = window.appState;
+            
+            if (committed) {
+                return `
+                    <div class="p-6 bg-green-50 rounded-xl shadow-md border-l-4 border-green-500 mb-8 text-center">
+                        <h2 class="text-2xl font-bold text-green-700 mb-2">Commitment Confirmed!</h2>
+                        <p class="text-green-600">You have dedicated yourself to completing the full 12-session protocol. This dedication is your foundation for healing.</p>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="p-6 bg-usa-blue/10 rounded-xl shadow-md border-l-4 border-usa-blue mb-8 text-center">
+                    <h2 class="text-2xl font-bold text-usa-blue mb-3">Confirm Your Commitment</h2>
+                    <p class="text-gray-700 mb-4">
+                        To begin the official healing protocol, you must confirm your personal commitment to attend and fully engage in all 12 sessions. This commitment is key to success.
+                    </p>
+                    <button onclick="confirmCommitment()" class="inline-block px-6 py-3 bg-usa-red text-white font-bold rounded-lg shadow-lg hover:bg-usa-red/90 transition duration-150 transform hover:scale-[1.02]">
+                        I Confirm My Commitment
+                    </button>
+                </div>
+            `;
+        }
+
+
+        function renderSessionCard(session, sessionId) {
+            const { currentSession, committed } = window.appState;
+            const isCompleted = sessionId < currentSession;
+            const isCurrent = sessionId === currentSession;
+            const isLocked = sessionId > currentSession;
+            
+            let cardClass = 'bg-white shadow-lg border-t-4';
+            let statusText = 'LOCKED';
+            let buttonText = 'Start Video';
+            let buttonClass = 'bg-gray-400 cursor-not-allowed';
+            let action = '';
+
+            if (isCompleted) {
+                cardClass = 'bg-green-50 shadow-xl border-t-4 border-green-500';
+                statusText = 'COMPLETED';
+                buttonText = 'Review Session';
+                buttonClass = 'bg-green-600 hover:bg-green-700';
+                action = `startSession(${sessionId}, '${session.title}')`;
+            } else if (isCurrent && committed) {
+                cardClass = 'bg-yellow-50 shadow-xl border-t-4 border-yellow-500';
+                statusText = 'CURRENT (In Progress)';
+                buttonText = 'Start Session';
+                buttonClass = 'bg-usa-blue hover:bg-usa-blue/90';
+                action = `startSession(${sessionId}, '${session.title}')`;
+            } else if (!committed) {
+                cardClass = 'bg-gray-100 shadow-md border-t-4 border-gray-300 opacity-70';
+                statusText = 'LOCKED (Confirm Commitment First)';
+                buttonText = 'Locked';
+                buttonClass = 'bg-gray-400 cursor-not-allowed';
+            }
+            
+            return `
+                <div class="p-4 rounded-xl flex flex-col justify-between ${cardClass}">
+                    <div>
+                        <div class="text-xs font-bold uppercase text-gray-500">${session.id < 10 ? '0' : ''}${session.id}</div>
+                        <h4 class="text-lg font-bold text-gray-800 my-1">${session.title}</h4>
+                        <p class="text-xs text-gray-600 mb-3">${session.description}</p>
+                    </div>
+                    <div>
+                        <div class="text-xs font-semibold mb-2 ${isCompleted ? 'text-green-600' : isCurrent ? 'text-yellow-700' : 'text-gray-500'}">
+                            Status: ${statusText}
+                        </div>
+                        <button 
+                            onclick="${action}" 
+                            ${(isLocked || !committed) && !isCompleted ? 'disabled' : ''}
+                            class="w-full py-2 text-sm text-white rounded-lg font-semibold transition duration-150 ${buttonClass}"
+                        >
+                            ${buttonText}
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function renderModal() {
+            const { showModal, modalTitle, modalContent, modalIsLoading, isGenerating } = window.appState;
+            
+            if (!showModal) return '';
+
+            return `
+                <!-- Modal Backdrop -->
+                <div class="fixed inset-0 bg-black bg-opacity-75 z-40 flex items-center justify-center p-4" onclick="closeModal()">
+                    
+                    <!-- Modal Content -->
+                    <div class="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto transform transition-all duration-300" 
+                         onclick="event.stopPropagation()">
+                        
+                        <!-- Modal Header -->
+                        <div class="sticky top-0 p-5 border-b border-gray-200 bg-white rounded-t-xl z-10">
+                            <h2 class="text-2xl font-bold text-usa-blue">${modalTitle}</h2>
+                            <button onclick="closeModal()" class="absolute top-4 right-4 text-gray-500 hover:text-gray-800">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
+
+                        <!-- Modal Body -->
+                        <div class="p-6">
+                            ${modalIsLoading || isGenerating 
+                                ? `<div class="text-center py-10">
+                                     <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-usa-blue mx-auto mb-4"></div>
+                                     <p class="text-lg font-medium text-gray-700">${modalContent}</p>
+                                   </div>` 
+                                : modalContent
+                            }
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- Initial Load ---
+
+        // Start the UI rendering when the window loads
+        window.onload = () => {
+            updateUI();
+        };
+
+    </script>
+</head>
+<body class="bg-light-blue">
+    <!-- Initial Loading State   -->
+    <div id="loading-state" class="flex justify-center items-center min-h-screen text-2xl font-semibold text-gray-600">
+        Loading Webpage...
+    </div>
+
+    <!-- Main Application Container (Hidden until rendered by updateUI()) -->
+    <div id="app-container" class="hidden">
+        <!-- Content will be rendered here by updateUI() -->
+    </div>
+</body>
+</html>
